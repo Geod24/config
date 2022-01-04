@@ -107,7 +107,26 @@
       handle those cases is to define a `validate` member method on the
       affected config struct(s), which will be called once
       parsing for that mapping is completed.
-      If an error is detected, this method should throw an Exception.
+      For better error reporting, the `validate` method should be declared
+      as: `void validate (OnConfigError handler) const`, and call the handler
+      with a message and optionally a key when an error is found, e.g.:
+      ```D
+      struct Config
+      {
+          public int answer;
+          public int half;
+
+          public void validate (OnConfigError handler) const
+          {
+              if (this.answer != 42)
+                  handler("The value is incorrect", "answer");
+              if (this.answer / 2 != this.half)
+                  handler("Check your math", "half");
+          }
+      }
+      ```
+      Note that one may pass `null` (which is the default value) for the second
+      parameter, if the error is not specific to a single field.
 
     Enabled_or_disabled_field:
       While most complex logic validation should be handled post-parsing,
@@ -306,6 +325,23 @@ public T parseConfig (T) (
     }
 }
 
+/*******************************************************************************
+
+    Delegate optionally passed to `validate` to generate better error messages
+
+    Params:
+      msg = The message to use as exception's message
+      key = Optionally, the key that triggered the error.
+            `null` means the error is at the aggregate level
+            (e.g. conflicting values between two fields).
+
+    Throws:
+      Always throws a type derived from `ConfigException`.
+
+*******************************************************************************/
+
+public alias OnConfigError = void delegate (string msg, string key = null);
+
 /// Used to pass around configuration
 private struct Context
 {
@@ -434,9 +470,28 @@ private T parseMapping (T)
         scope (exit) indent--;
     }
 
+    void onConfigError (string msg, string key = null)
+    {
+        throw new ConfigExceptionImpl(msg, path, key, node.startMark());
+    }
+
     T doValidation (T result)
     {
-        static if (is(typeof(result.validate())))
+        static if (is(typeof(result.validate(OnConfigError.init))))
+        {
+            if (enabledState)
+            {
+                dbgWrite("%s: Calling `%s` method",
+                     T.stringof.paint(Cyan), "validate()".paint(Green));
+                result.validate(&onConfigError);
+            }
+            else
+            {
+                dbgWrite("%s: Ignoring `%s` method on disabled mapping",
+                         T.stringof.paint(Cyan), "validate()".paint(Green));
+            }
+        }
+        else static if (is(typeof(result.validate())))
         {
             if (enabledState)
             {
@@ -1187,4 +1242,47 @@ unittest
     assert(validateCalls0 == 2); // + 1
     assert(validateCalls1 == 2); // Other are disabled
     assert(validateCalls2 == 3);
+}
+
+// Testing 'validate()' with a delegate
+unittest
+{
+    __gshared int validateCalls = 0;
+
+    static struct SecondLayer
+    {
+        string value = "default";
+
+        public void validate (OnConfigError handler) const
+        {
+            validateCalls++;
+            if (this.value != "default")
+                handler("Value is not the default: " ~ this.value, "value");
+        }
+    }
+
+    static struct FirstLayer
+    {
+        bool enabled = true;
+        SecondLayer ltwo;
+    }
+
+    static struct Config
+    {
+        FirstLayer lone;
+    }
+
+    try
+    {
+        auto r1 = parseConfigString!Config("lone:\n  ltwo:\n    value: Something\n", "/dev/null");
+        assert(0);
+    }
+    catch (Exception exc)
+    {
+        assert(exc.toString() == "<unknown>(2:4): lone.ltwo.value: Value is not the default: Something");
+    }
+    assert(validateCalls == 1);
+
+    auto r2 = parseConfigString!Config("lone:\n  enabled: false\n  ltwo:\n    value: Something\n", "/dev/null");
+    assert(validateCalls == 1); // Not called, no Exception
 }
