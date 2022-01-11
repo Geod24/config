@@ -317,7 +317,13 @@ private struct Context
 }
 
 /// Helper template for `staticMap` used for strict mode
-private enum FieldRefToName (alias FR) = FR.Name;
+private template FieldRefToName (alias FR)
+{
+    static if (hasUDA!(FR.Ref, Flatten))
+        alias FieldRefToName = FieldsName!(FR.Type);
+    else
+        alias FieldRefToName = FR.Name;
+}
 
 /// Returns: An alias sequence of field names, taking UDAs (`@Name` et al) into account
 private alias FieldsName (T) = staticMap!(FieldRefToName, FieldRefTuple!T);

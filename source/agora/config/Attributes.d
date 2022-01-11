@@ -266,3 +266,41 @@ public auto converter (FT) (FT func)
                   "Error: Converter needs to be of the return type of the field, not `void`");
     return Converter!RType(func);
 }
+
+/*******************************************************************************
+
+    Directly embeds a `struct` inside its parent, instead of expecting a mapping
+
+    Some small structs may be re-used for configuration purpose, which could
+    make the resulting file needlessly nested.
+    Applying the `Flatten` attribute can then be useful.
+
+    The following code:
+    ```
+    struct Kernels
+    {
+        size_t corn;
+        size_t strawberry;
+        @Optional size_t wheat;
+    }
+
+    struct Config
+    {
+        @Flatten Kernels kernels;
+        size_t farmers;
+    }
+    ```
+    Is equivalent to:
+    ```
+    struct Kernels
+    {
+        size_t corn;
+        size_t strawberry;
+        @Optional size_t wheat;
+        size_t farmers;
+    }
+    ```
+
+*******************************************************************************/
+
+public struct Flatten {}
