@@ -339,13 +339,18 @@ private T parseMapping (T)
              T.stringof.paint(Cyan), path.paint(Cyan),
              node.length.paintIf(!!node.length, Green, Red));
 
+    // Detects duplicates introduced by `@Name`
+    // However, duplicates introduced by `@Flatten` are detected later on.
     static foreach (FR; FieldRefTuple!T)
     {
         static if (FR.Name != FR.FieldName && hasMember!(T, FR.Name))
-            static assert (FieldRef!(T, FR.Name).Name != FR.Name,
+        {
+            static assert (hasUDA!(FieldRef!(T, FR.Name).Ref, Flatten) ||
+                           FieldRef!(T, FR.Name).Name != FR.Name,
                            "Field `" ~ FR.FieldName ~ "` `@Name` attribute shadows field `" ~
                            FR.Name ~ "` in `" ~ T.stringof ~ "`: Add a `@Name` attribute to `" ~
                            FR.Name ~ "` or change that of `" ~ FR.FieldName ~ "`");
+        }
     }
 
     if (ctx.strict)
@@ -391,6 +396,12 @@ private T parseMapping (T)
             else
                 return default_;
         }
+
+        static if (hasUDA!(FR.Ref, Flatten))
+            return (*ptr).parseField!(FR)(path.addPath(FR.Name), default_, ctx)
+                .dbgWriteRet("Using value '%s' from YAML document for field '%s'",
+                             FR.FieldName.paint(Cyan));
+
 
         if (auto ptr = FName in fieldDefaults)
         {
@@ -1345,15 +1356,25 @@ unittest
 // Test duplicate fields detection
 unittest
 {
+    struct Flattened
+    {
+        int flat;
+    }
+
     static struct Config
     {
         @Name("shadow") int value;
         @Name("value")  int shadow;
+
+        @Flatten Flattened ignored;
+        @Name("ignored") int flat; // Doesn't conflict with flattened
     }
 
-    auto result = parseConfigString!Config("shadow: 42\nvalue: 84\n", "/dev/null");
+    auto result = parseConfigString!Config("shadow: 42\nvalue: 84\nignored: 69\nflat: 21\n", "/dev/null");
     assert(result.value  == 42);
     assert(result.shadow == 84);
+    assert(result.ignored.flat == 21);
+    assert(result.flat == 69);
 
     static struct BadConfig
     {
@@ -1363,8 +1384,15 @@ unittest
 
     // Cannot test the error message, so this is as good as it gets
     static assert(!is(typeof(() {
-                    auto r = parseConfigString!BadConfig("shadow: 42\nvalue: 84\n", "/dev/null");
+                    auto r = parseConfigString!BadConfig("", "/dev/null");
                 })));
+
+    static struct BadFlatten
+    {
+        @Flatten Flattened name;
+        int flat;
+    }
+    auto f = parseConfigString!BadFlatten("", "");
 }
 
 // Test a renamed `enabled` / `disabled`
