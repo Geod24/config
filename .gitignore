@@ -33,3 +33,4 @@ dub.selections.json
 
 # Examples binary
 examples/helloworld/helloworld
+examples/dub/dub-config-dumper

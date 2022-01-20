@@ -1,0 +1,9 @@
+{
+    "name": "dub-config-dumper",
+    "dependencies": {
+        "config": { "path": "../../", "version": "*" }
+    },
+    "subConfigurations": {
+        "config": "debug"
+    }
+}
