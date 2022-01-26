@@ -888,7 +888,10 @@ private template FieldRef (alias T, string name)
     public alias Ref = __traits(getMember, T, name);
 
     /// Type of the field
-    public alias Type = typeof(Ref);
+    ///
+    /// Should be `typeof(Ref)` but we need to work around
+    /// https://issues.dlang.org/show_bug.cgi?id=20884#c3
+    public alias Type = typeof(__traits(getMember, T, name));
 
     /// The name of the field in the struct itself
     public alias FieldName = name;
