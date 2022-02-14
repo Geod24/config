@@ -156,7 +156,24 @@ public struct Name
 public struct SetInfo (T)
 {
     /// Allow initialization as a field
-    public this (T initVal, bool isSet = false) @safe pure nothrow @nogc
+    public this (T initVal, bool isSet = false)
+        @safe pure nothrow @nogc
+    {
+        this.value = initVal;
+        this.set = isSet;
+    }
+
+    /// Ditto
+    public this (const T initVal, bool isSet = false) const
+        @safe pure nothrow @nogc
+    {
+        this.value = initVal;
+        this.set = isSet;
+    }
+
+    /// Ditto
+    public this (immutable T initVal, bool isSet = false) immutable
+        @safe pure nothrow @nogc
     {
         this.value = initVal;
         this.set = isSet;

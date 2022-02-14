@@ -447,6 +447,7 @@ private T parseMapping (T)
         // Using exact type here matters: we could get a qualified type
         // (e.g. `immutable(string)`) if the field is qualified,
         // which causes problems.
+        pragma(msg, "Convert: ", FR.Name, " - ", FR.Type, " from ", T);
         FR.Type default_ = __traits(getMember, defaultValue, FR.FieldName);
 
         // If this struct is disabled, do not attempt to parse anything besides
@@ -574,9 +575,12 @@ private FR.Type parseField (alias FR)
     // If we reached this, it means the field is set, so just recurse
     // to peel the type
     static if (is(FR.Type : SetInfo!FT, FT))
+    {
+        pragma(msg, "Field ", FR.Name, " is a SetInfo");
         return FR.Type(
-            parseField!(FieldRef!(FR.Type, "value"))(node, path, defaultValue, ctx),
+            parseField!(FieldRef!(FR.Type, "value"))(node, path, defaultValue.value, ctx),
             true);
+    }
 
     else static if (hasConverter!(FR.Ref))
         return wrapException(node.viaConverter!(FR), path, node.startMark());
@@ -910,6 +914,9 @@ private template FieldRef (alias T, string name)
 
     /// Default value of the field (may or may not be `Type.init`)
     public enum Default = __traits(getMember, T.init, name);
+
+    /// Create a `FieldRef` referencing a child of this one
+    public alias ChildRef (string name) = FieldRef!(Ref, name);
 }
 
 /// Get a tuple of `FieldRef` from a `struct`
@@ -1013,6 +1020,11 @@ unittest
         Config2 c2 = { c1dup: { integer2: 69 } };
     }
 
+    static struct Config4
+    {
+        immutable Config3 withAttr;
+    }
+
     static assert(is(FieldRef!(Config3, "c2").Type == Config2));
     static assert(FieldRef!(Config3, "c2").Default != Config2.init);
     static assert(FieldRef!(Config2, "message").Default == Config2.init.message);
@@ -1024,6 +1036,12 @@ unittest
 
     static assert(FieldRefTuple!(Config3)[1].Name == "integer");
     static assert(FieldRefTuple!(FieldRefTuple!(Config3)[0].Type)[1].Name == "notStr2");
+
+    // Work around for https://issues.dlang.org/show_bug.cgi?id=20884#c3
+    alias QFR1 = FieldRef!(Config4, "withAttr");
+    static assert(is(QFR1.Type == immutable(Config3)));
+    alias QFR2 = QFR1.ChildRef!"c2";
+    static assert(is(QFR2.Type == immutable(Config2)));
 }
 
 /// Evaluates to `true` if `T` is a `struct` with a default ctor
@@ -1527,4 +1545,21 @@ unittest
     {
         assert(exc.toString() == "(0:0): chris.jay: Required key was not found in configuration or command line arguments");
     }
+}
+
+unittest
+{
+    static struct Inner
+    {
+        SetInfo!(char[]) imset;
+    }
+
+    static struct Config
+    {
+        immutable Inner inner;
+    }
+
+    auto c = parseConfigString!Config("inner:\n  imset: Marsupilami\n", "/dev/null");
+    assert(c.inner.imset.set);
+    assert(c.inner.imset.value == "Mathias");
 }
