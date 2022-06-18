@@ -410,8 +410,12 @@ private struct Context
 /// Helper template for `staticMap` used for strict mode
 private enum FieldRefToName (alias FR) = FR.Name;
 
+private enum IsPattern (alias FR) = FR.Pattern;
+
 /// Returns: An alias sequence of field names, taking UDAs (`@Name` et al) into account
 private alias FieldsName (T) = staticMap!(FieldRefToName, FieldRefTuple!T);
+
+private alias Patterns (T) = staticMap!(FieldRefToName, Filter!(IsPattern, FieldRefTuple!T));
 
 /// Parse a single mapping, recurse as needed
 private T parseMapping (T)
@@ -439,10 +443,23 @@ private T parseMapping (T)
         /// First, check that all the sections found in the mapping are present in the type
         /// If not, the user might have made a typo.
         immutable string[] fieldNames = [ FieldsName!T ];
-        foreach (const ref Node key, const ref Node value; node)
-            if (!fieldNames.canFind(key.as!string))
+        immutable string[] patterns = [ Patterns!T ];
+    FIELD: foreach (const ref Node key, const ref Node value; node)
+        {
+            const k = key.as!string;
+            if (!fieldNames.canFind(k))
+            {
+                foreach (p; patterns)
+                    if (k.startsWith(p))
+                        // Require length because `0` would match `canFind`
+                        // and we don't want to allow `$PATTERN-`
+                        if (k[p.length .. $].length > 1 && k[p.length] == '-')
+                            continue FIELD;
+
                 throw new UnknownKeyConfigException(
                     path, key.as!string, fieldNames, key.startMark());
+            }
+        }
     }
 
     const enabledState = node.isMappingEnabled!T(defaultValue);
@@ -455,6 +472,8 @@ private T parseMapping (T)
         static if (FR.Name != FR.FieldName)
             dbgWrite("Field name `%s` will use YAML field `%s`",
                      FR.FieldName.paint(Yellow), FR.Name.paint(Green));
+
+
         // Using exact type here matters: we could get a qualified type
         // (e.g. `immutable(string)`) if the field is qualified,
         // which causes problems.
@@ -487,6 +506,44 @@ private T parseMapping (T)
             return (*ptr).parseField!(FR)(path.addPath(FR.FieldName), default_, ctx)
                 .dbgWriteRet("Using value '%s' from fieldDefaults for field '%s'",
                              FR.FieldName.paint(Cyan));
+        }
+
+        // This, `FR.Pattern`, and the field in `@Name` are special support for `dub`
+        static if (FR.Pattern)
+        {
+            static if (is(FR.Type : V[K], K, V))
+            {
+                static struct AAFieldRef
+                {
+                    ///
+                    private enum Ref = V.init;
+                    ///
+                    private alias Type = V;
+                }
+
+                static assert(is(K : string), "Key type should be string-like");
+            }
+            else
+                static assert(0, "Cannot have pattern on non-AA field");
+
+            AAFieldRef.Type[string] result;
+            foreach (pair; node.mapping)
+            {
+                const key = pair.key.as!string;
+                if (!key.startsWith(FR.Name))
+                    continue;
+                string suffix = key[FR.Name.length .. $];
+                if (suffix.length)
+                {
+                    if (suffix[0] == '-') suffix = suffix[1 .. $];
+                    else continue;
+                }
+
+                result[suffix] = pair.value.parseField!(AAFieldRef)(
+                    path.addPath(key), default_.get(key, AAFieldRef.Type.init), ctx);
+            }
+            bool hack = true;
+            if (hack) return result;
         }
 
         if (auto ptr = FR.Name in node)
@@ -949,9 +1006,14 @@ private template FieldRef (alias T, string name, bool forceOptional = false)
                        "` cannot have more than one `Name` attribute");
 
         public immutable Name = getUDAs!(Ref, CAName)[0].name;
+
+        public immutable Pattern = getUDAs!(Ref, CAName)[0].startsWith;
     }
     else
+    {
         public immutable Name = FieldName;
+        public immutable Pattern = false;
+    }
 
     /// Default value of the field (may or may not be `Type.init`)
     public enum Default = __traits(getMember, T.init, name);
@@ -1691,4 +1753,18 @@ unittest
     auto c = parseConfigString!Config("names:\n  - John\n  - Luca\n", "/dev/null");
     assert(c.names_ == [ "John", "Luca" ]);
     assert(c.names == 2);
+}
+
+
+unittest
+{
+    static struct Config
+    {
+        @Name("names", true)
+        string[][string] names_;
+    }
+
+    auto c = parseConfigString!Config("names-x86:\n  - John\n  - Luca\nnames:\n  - Marie", "/dev/null");
+    assert(c.names_[null] == [ "Marie" ]);
+    assert(c.names_["x86"] == [ "John", "Luca" ]);
 }

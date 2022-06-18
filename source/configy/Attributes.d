@@ -110,6 +110,9 @@ public struct Name
 {
     ///
     public string name;
+
+    ///
+    public bool startsWith;
 }
 
 /*******************************************************************************
