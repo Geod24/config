@@ -144,6 +144,7 @@ public import configy.Attributes;
 public import configy.Exceptions : ConfigException;
 import configy.Exceptions;
 import configy.FieldRef;
+import configy.TypeMap;
 import configy.Utils;
 
 import dyaml.exception;
@@ -339,6 +340,8 @@ private void printException (scope ConfigException exc) @trusted
     Parses the config file or string and returns a `Config` instance.
 
     Params:
+        TypeMap = A template that is used to resolve complex types.
+                  See `configy.TypeMap`.
         cmdln = command-line arguments (containing the path to the config)
         path = When parsing a string, the path corresponding to it
         strict = Whether the parsing should reject unknown keys in the
@@ -352,20 +355,22 @@ private void printException (scope ConfigException exc) @trusted
 
 *******************************************************************************/
 
-public T parseConfigFile (T) (in CLIArgs cmdln, StrictMode strict = StrictMode.Error)
+public T parseConfigFile (T, alias TypeMap = DefaultTypeMap)
+    (in CLIArgs cmdln, StrictMode strict = StrictMode.Error)
 {
     Node root = Loader.fromFile(cmdln.config_path).load();
-    return parseConfig!T(cmdln, root, strict);
+    return parseConfig!(T, TypeMap)(cmdln, root, strict);
 }
 
 /// ditto
-public T parseConfigString (T) (string data, string path, StrictMode strict = StrictMode.Error)
+public T parseConfigString (T, alias TypeMap = DefaultTypeMap)
+    (string data, string path, StrictMode strict = StrictMode.Error)
 {
     CLIArgs cmdln = { config_path: path };
     auto loader = Loader.fromString(data);
     loader.name = path;
     Node root = loader.load();
-    return parseConfig!T(cmdln, root, strict);
+    return parseConfig!(T, TypeMap)(cmdln, root, strict);
 }
 
 /*******************************************************************************
@@ -380,6 +385,8 @@ public T parseConfigString (T) (string data, string path, StrictMode strict = St
       cmdln = Command line arguments
       node = The root node matching `T`
       strict = Action to take when encountering unknown keys in the document
+      TypeMap = A template that is used to resolve complex types.
+                See `configy.TypeMap`.
 
     Returns:
       An instance of `T` filled with the content of `node`
@@ -390,7 +397,7 @@ public T parseConfigString (T) (string data, string path, StrictMode strict = St
 
 *******************************************************************************/
 
-public T parseConfig (T) (
+public T parseConfig (T, alias TypeMap = DefaultTypeMap) (
     in CLIArgs cmdln, Node node, StrictMode strict = StrictMode.Error)
 {
     static assert(is(T == struct), "`" ~ __FUNCTION__ ~
@@ -404,7 +411,7 @@ public T parseConfig (T) (
                      fullyQualifiedName!T,
                      strict == StrictMode.Warn ?
                        strict.paint(Yellow) : strict.paintIf(!!strict, Green, Red));
-            return node.parseMapping!(StructFieldRef!T)(
+            return node.parseMapping!(StructFieldRef!T, TypeMap)(
                 null, T.init, const(Context)(cmdln, strict), null);
     case NodeID.sequence:
     case NodeID.scalar:
@@ -431,7 +438,7 @@ public enum StrictMode
 }
 
 /// Used to pass around configuration
-private struct Context
+package struct Context
 {
     ///
     private CLIArgs cmdln;
@@ -455,7 +462,7 @@ private struct Context
       fieldDefaults = Default value for some fields, used for `Key` recursion
 
 *******************************************************************************/
-private TLFR.Type parseMapping (alias TLFR)
+private TLFR.Type parseMapping (alias TLFR, alias TypeMap)
     (Node node, string path, auto ref TLFR.Type defaultValue,
      in Context ctx, in Node[string] fieldDefaults)
 {
@@ -476,6 +483,22 @@ private TLFR.Type parseMapping (alias TLFR)
                            FR.Name ~ "` or change that of `" ~ FR.FieldName ~ "`");
     }
 
+    static if (hasEntryFor!(TypeMap, TLFR.Type)) {
+        dbgWrite("TypeMap entry for %s, forwarding to: %s",
+                 TLFR.Type.stringof.paint(Cyan),
+                 TypeMap!(TLFR.Type).stringof.paint(Yellow));
+        scope parser = new ConfigParser!TypeMap(node, path, ctx);
+        return TypeMap!(TLFR.Type)(parser);
+    }
+    else
+        return parseMappingImpl!(TLFR, TypeMap)(node, path, defaultValue, ctx, fieldDefaults);
+}
+
+/// Ditto
+private TLFR.Type parseMappingImpl(alias TLFR, alias TypeMap)
+    (Node node, string path, auto ref TLFR.Type defaultValue,
+     in Context ctx, in Node[string] fieldDefaults)
+{
     if (ctx.strict != StrictMode.Ignore)
     {
         /// First, check that all the sections found in the mapping are present in the type
@@ -537,7 +560,7 @@ private TLFR.Type parseMapping (alias TLFR)
 
             if (ctx.strict && FR.FieldName in node)
                 throw new ConfigExceptionImpl("'Key' field is specified twice", path, FR.FieldName, node.startMark());
-            return (*ptr).parseField!(FR)(path.addPath(FR.FieldName), default_, ctx)
+            return (*ptr).parseField!(FR, TypeMap)(path.addPath(FR.FieldName), default_, ctx)
                 .dbgWriteRet("Using value '%s' from fieldDefaults for field '%s'",
                              FR.FieldName.paint(Cyan));
         }
@@ -547,7 +570,7 @@ private TLFR.Type parseMapping (alias TLFR)
             dbgWrite("%s: YAML field is %s in node%s",
                      FR.Name.paint(Cyan), "present".paint(Green),
                      (FR.Name == FR.FieldName ? "" : " (note that field name is overriden)").paint(Yellow));
-            return (*ptr).parseField!(FR)(path.addPath(FR.Name), default_, ctx)
+            return (*ptr).parseField!(FR, TypeMap)(path.addPath(FR.Name), default_, ctx)
                 .dbgWriteRet("Using value '%s' from YAML document for field '%s'",
                              FR.FieldName.paint(Cyan));
         }
@@ -575,7 +598,7 @@ private TLFR.Type parseMapping (alias TLFR)
         {
             const npath = path.addPath(FR.Name);
             string[string] aa;
-            return Node(aa).parseMapping!(FR)(npath, default_, ctx, null);
+            return Node(aa).parseMapping!(FR, TypeMap)(npath, default_, ctx, null);
         }
         else
             throw new MissingKeyException(path, FR.Name, node.startMark());
@@ -653,7 +676,7 @@ private TLFR.Type parseMapping (alias TLFR)
 
 *******************************************************************************/
 
-private FR.Type parseField (alias FR)
+package FR.Type parseField (alias FR, alias TypeMap)
     (Node node, string path, auto ref FR.Type defaultValue, in Context ctx)
 {
     if (node.nodeID == NodeID.invalid)
@@ -663,7 +686,7 @@ private FR.Type parseField (alias FR)
     // to peel the type
     static if (is(FR.Type : SetInfo!FT, FT))
         return FR.Type(
-            parseField!(FieldRef!(FR.Type, "value"))(node, path, defaultValue, ctx),
+            parseField!(FieldRef!(FR.Type, "value"), TypeMap)(node, path, defaultValue, ctx),
             true);
 
     else static if (hasConverter!(FR.Ref))
@@ -675,19 +698,16 @@ private FR.Type parseField (alias FR)
     else static if (hasStringCtor!(FR.Type))
         return wrapException(FR.Type(node.as!string), path, node.startMark());
 
-    else static if (is(immutable(FR.Type) == immutable(core.time.Duration)))
-    {
-        if (node.nodeID != NodeID.mapping)
-            throw new DurationTypeConfigException(node, path);
-        return node.parseMapping!(StructFieldRef!DurationMapping)(
-            path, DurationMapping.make(defaultValue), ctx, null).opCast!Duration;
+    else static if (hasEntryFor!(TypeMap, FR.Type)) {
+        scope parser = new ConfigParser!(TypeMap)(node, path, ctx);
+        return TypeMap!(FR.Type)(parser);
     }
 
     else static if (is(FR.Type == struct))
     {
         if (node.nodeID != NodeID.mapping)
             throw new TypeConfigException(node, "mapping (object)", path);
-        return node.parseMapping!(FR)(path, defaultValue, ctx, null);
+        return node.parseMapping!(FR, TypeMap)(path, defaultValue, ctx, null);
     }
 
     // Handle string early as they match the sequence rule too
@@ -711,7 +731,7 @@ private FR.Type parseField (alias FR)
                 (Node.Pair pair) {
                     return tuple(
                         pair.key.get!K,
-                        pair.value.parseField!(NestedFieldRef!(E, FR))(
+                        pair.value.parseField!(NestedFieldRef!(E, FR), TypeMap)(
                             format("%s[%s]", path, pair.key.as!string), E.init, ctx));
                 }).assocArray();
 
@@ -740,7 +760,7 @@ private FR.Type parseField (alias FR)
                             "sequence of mapping (array of objects)",
                             path, null, node.startMark());
 
-                    return pair.value.parseMapping!(StructFieldRef!E)(
+                    return pair.value.parseMapping!(StructFieldRef!E, TypeMap)(
                         path.addPath(pair.key.as!string),
                         E.init, ctx, key.length ? [ key: pair.key ] : null);
                 }).array();
@@ -754,7 +774,7 @@ private FR.Type parseField (alias FR)
             // Either there is something in the YAML document, and that will be
             // converted, or `sequence` will not iterate.
             return node.sequence.enumerate.map!(
-                kv => kv.value.parseField!(NestedFieldRef!(E, FR))(
+                kv => kv.value.parseField!(NestedFieldRef!(E, FR), TypeMap)(
                     format("%s[%s]", path, kv.index), E.init, ctx))
                 .array();
         }
@@ -809,60 +829,6 @@ private T wrapException (T) (lazy T exp, string path, Mark position,
         throw exc;
     catch (Exception exc)
         throw new ConstructionException(exc, path, position, file, line);
-}
-
-/// Allows us to reuse parseMapping and strict parsing
-private struct DurationMapping
-{
-    public SetInfo!long weeks;
-    public SetInfo!long days;
-    public SetInfo!long hours;
-    public SetInfo!long minutes;
-    public SetInfo!long seconds;
-    public SetInfo!long msecs;
-    public SetInfo!long usecs;
-    public SetInfo!long hnsecs;
-    public SetInfo!long nsecs;
-
-    private static DurationMapping make (Duration def) @safe pure nothrow @nogc
-    {
-        typeof(return) result;
-        auto fullSplit = def.split();
-        result.weeks = SetInfo!long(fullSplit.weeks, fullSplit.weeks != 0);
-        result.days = SetInfo!long(fullSplit.days, fullSplit.days != 0);
-        result.hours = SetInfo!long(fullSplit.hours, fullSplit.hours != 0);
-        result.minutes = SetInfo!long(fullSplit.minutes, fullSplit.minutes != 0);
-        result.seconds = SetInfo!long(fullSplit.seconds, fullSplit.seconds != 0);
-        result.msecs = SetInfo!long(fullSplit.msecs, fullSplit.msecs != 0);
-        result.usecs = SetInfo!long(fullSplit.usecs, fullSplit.usecs != 0);
-        result.hnsecs = SetInfo!long(fullSplit.hnsecs, fullSplit.hnsecs != 0);
-        // nsecs is ignored by split as it's not representable in `Duration`
-        return result;
-    }
-
-    ///
-    public void validate () const @safe
-    {
-        // That check should never fail, as the YAML parser would error out,
-        // but better be safe than sorry.
-        foreach (field; this.tupleof)
-            if (field.set)
-                return;
-
-        throw new Exception(
-            "Expected at least one of the components (weeks, days, hours, " ~
-            "minutes, seconds, msecs, usecs, hnsecs, nsecs) to be set");
-    }
-
-    ///  Allow conversion to a `Duration`
-    public Duration opCast (T : Duration) () const scope @safe pure nothrow @nogc
-    {
-        return core.time.weeks(this.weeks) + core.time.days(this.days) +
-            core.time.hours(this.hours) + core.time.minutes(this.minutes) +
-            core.time.seconds(this.seconds) + core.time.msecs(this.msecs) +
-            core.time.usecs(this.usecs) + core.time.hnsecs(this.hnsecs) +
-            core.time.nsecs(this.nsecs);
-    }
 }
 
 /// Evaluates to `true` if we should recurse into the struct via `parseMapping`

@@ -15,6 +15,7 @@ module configy.Test;
 import configy.Attributes;
 import configy.Exceptions;
 import configy.Read;
+import configy.TypeMap;
 import configy.Utils;
 
 import dyaml.node;
@@ -690,4 +691,48 @@ unittest
 `, "/dev/null");
     catch (Exception exc)
         assert(exc.toString() == `/dev/null(2:6): data.array[0]: Parsing failed!`);
+}
+
+/// Test for TypeMap
+unittest
+{
+    static struct Settings
+    {
+        int level;
+        string[] flags;
+        Duration timeout;
+    }
+
+    static struct Recipe
+    {
+        string name;
+        Settings settings;
+    }
+
+    static struct Mixed
+    {
+        string name;
+        Settings settings;
+        alias settings this;
+    }
+
+    static Recipe parseRecipe (alias TM) (scope ConfigParser!TM parser)
+    {
+        auto mixed = parser.parseAs!Mixed();
+        return Recipe(mixed.name, mixed.settings);
+    }
+
+    alias AliasThisTM = AddEntry!(DefaultTypeMap, Recipe, parseRecipe);
+    static assert(hasEntryFor!(AliasThisTM, Recipe));
+
+    Recipe c = parseConfigString!(Recipe, AliasThisTM)(`name: foo
+level: 42
+flags: ["a", "b"]
+timeout:
+  seconds: 5
+`, "/dev/null");
+    assert(c.name == "foo");
+    assert(c.settings.level == 42);
+    assert(c.settings.flags == ["a", "b"]);
+    assert(c.settings.timeout == 5.seconds);
 }
